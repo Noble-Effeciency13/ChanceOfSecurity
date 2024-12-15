@@ -19,9 +19,14 @@
     Required parameter. Example: 2024-12-31
 
 .EXAMPLE
-    .\Update-UserLifecycleDates.ps1 -UserPrincipalName john.doe@contoso.com -HireDateInput 2024-01-15 -LeaveDateInput 2024-12-31
+    .\Update-EmployeeData.ps1 -UserPrincipalName john.doe@contoso.com -HireDateInput 2024-01-15
     
-    Updates John Doe's hire and leave dates in Microsoft Graph.
+    Updates John Doe's hire date in Microsoft Entra via Microsoft Graph.
+
+.EXAMPLE
+    .\Update-EmployeeData.ps1 -UserPrincipalName john.doe@contoso.com -LeaveDateInput 2024-12-31
+    
+    Updates John Doe's leave dates in Microsoft Entra via Microsoft Graph.
 
 .NOTES
     Prerequisites:
@@ -32,7 +37,7 @@
 
     Author: Sebastian Flæng Markdanner
     Website: https://chanceofsecurity.com
-    Version: 1.3
+    Version: 1.4
     Last Updated: 2024-12-15
 
 .LINK
@@ -45,16 +50,21 @@ param (
     [ValidateNotNullOrEmpty()]
     [string]$UserPrincipalName,
 
-    [Parameter(Mandatory = $true, 
+    [Parameter(Mandatory = $false, 
                HelpMessage = "Enter hire date in yyyy-MM-dd format")]
     [ValidatePattern('^\d{4}-\d{2}-\d{2}$')]
     [string]$HireDateInput,
 
-    [Parameter(Mandatory = $true, 
+    [Parameter(Mandatory = $false, 
                HelpMessage = "Enter leave date in yyyy-MM-dd format")]
     [ValidatePattern('^\d{4}-\d{2}-\d{2}$')]
     [string]$LeaveDateInput
 )
+
+# Check if at least one date parameter is provided
+if (-not $HireDateInput -and -not $LeaveDateInput) {
+    throw "At least one of the parameters 'HireDateInput' or 'LeaveDateInput' must be provided."
+}
 
 # Function to validate and format dates
 function Format-DateToISO8601 {
@@ -76,9 +86,14 @@ function Format-DateToISO8601 {
 
 # Main script execution block
 try {
-    # Format the dates
-    $EmployeeHireDate = Format-DateToISO8601 -DateInput $HireDateInput -TimeSuffix "T00:00:00Z"
-    $EmployeeLeaveDateTime = Format-DateToISO8601 -DateInput $LeaveDateInput -TimeSuffix "T23:59:59Z"
+    # Format the dates if provided
+    $EmployeeHireDate = if ($HireDateInput) {
+        Format-DateToISO8601 -DateInput $HireDateInput -TimeSuffix "T00:00:00Z"
+    } else { $null }
+
+    $EmployeeLeaveDateTime = if ($LeaveDateInput) {
+        Format-DateToISO8601 -DateInput $LeaveDateInput -TimeSuffix "T23:59:59Z"
+    } else { $null }
 
     # Verbose connection status
     Write-Verbose "Connecting to Microsoft Graph with required scopes..."
@@ -86,18 +101,26 @@ try {
     # Connect to Microsoft Graph with specified scopes
     Connect-MgGraph -Scopes "User.ReadWrite.All", "User-LifeCycleInfo.ReadWrite.All" | Out-Null
 
-    # Update user lifecycle dates
-    Update-MgUser -UserId $UserPrincipalName `
-                  -EmployeeHireDate $EmployeeHireDate `
-                  -EmployeeLeaveDateTime $EmployeeLeaveDateTime
+    # Update user lifecycle dates if provided
+    $UpdateParams = @{
+        UserId = $UserPrincipalName
+    }
+    if ($EmployeeHireDate) { $UpdateParams.EmployeeHireDate = $EmployeeHireDate }
+    if ($EmployeeLeaveDateTime) { $UpdateParams.EmployeeLeaveDateTime = $EmployeeLeaveDateTime }
+
+    Update-MgUser @UpdateParams
 
     # Confirm update and retrieve updated user details
     $UpdatedUser = Get-MgUser -UserId $UserPrincipalName -Property EmployeeHireDate,EmployeeLeaveDateTime
 
     # Output results
     Write-Host "Successfully updated lifecycle dates for $($UserPrincipalName):" -ForegroundColor Green
-    Write-Host "Hire Date: $($UpdatedUser.EmployeeHireDate)" -ForegroundColor Cyan
-    Write-Host "Leave Date: $($UpdatedUser.EmployeeLeaveDateTime)" -ForegroundColor Cyan
+    if ($EmployeeHireDate) {
+        Write-Host "Hire Date: $($UpdatedUser.EmployeeHireDate)" -ForegroundColor Cyan
+    }
+    if ($EmployeeLeaveDateTime) {
+        Write-Host "Leave Date: $($UpdatedUser.EmployeeLeaveDateTime)" -ForegroundColor Cyan
+    }
 } 
 catch {
     # Robust error handling with detailed error message
