@@ -16,7 +16,7 @@ A custom description or identifier for the client secret.
 The number of years the client secret will remain valid. Default is 99 years.
 
 .EXAMPLE
-.\Create-ClientSecret.ps1 -ClientId "12345678-90ab-cdef-1234-567890abcdef" -Description "MyAppSecret" -Duration 99
+.\CreateClientSecret.ps1 -ClientId "12345678-90ab-cdef-1234-567890abcdef" -Description "MyAppSecret" -Duration 99
 Creates a client secret for the specified app with a validity period of 99 years and copies the secret value to the clipboard.
 
 .NOTES
