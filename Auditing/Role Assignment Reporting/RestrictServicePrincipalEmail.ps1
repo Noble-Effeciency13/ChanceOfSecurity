@@ -27,7 +27,7 @@ The alias for the shared mailbox.
 The Application (Client) ID of the Entra ID app registration.
 
 .EXAMPLE
-.\Create-ExchangeOnlineResources.ps1 `
+.\RestrictServicePrincipalEmail.ps1 `
     -GroupName "SMTP Graph" `
     -GroupAlias "smtp-graph" `
     -GroupEmail "smtp-graph@contoso.com" `
