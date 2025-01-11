@@ -52,7 +52,7 @@ The prefix for the name of the final excel file. Default is "Entra And RBAC Admi
 .NOTES
 Author:     Sebastian Flæng Markdanner
 Website:    https://chanceofsecurity.com
-Version:    1.6
+Version:    1.7
 
 - Entra ID Service Principal with:
   - Azure RBAC Reader role at Subscription, Management Group OR Root level.
@@ -185,17 +185,6 @@ function Get-AzAccessToken {
     return $response.access_token
 }
 
-function Check-Module {
-    param([string]$moduleName)
-    $installedModule = Get-InstalledModule -Name $moduleName -ErrorAction SilentlyContinue
-    $onlineModule = Find-Module -Name $moduleName -ErrorAction SilentlyContinue
-    if ($installedModule -and $onlineModule) {
-        if ($installedModule.Version -lt $onlineModule.Version) { return $true }
-    } 
-    elseif (-not $installedModule) { return $true }
-    return $false
-}
-
 function Install-OrUpdateModule {
     param([string]$moduleName)
     if (!(Get-Module -Name $moduleName -ListAvailable)) {
@@ -291,7 +280,7 @@ $servicePlanId = "eec0eb4f-6444-4f95-aba0-50c24d67f998"
 $subscriptionsResponse = Invoke-RestMethod -Method Get -Uri "https://graph.microsoft.com/v1.0/subscribedSkus" -Headers $authHeader
 $servicePlanEnabled = $subscriptionsResponse.value | Where-Object {
     $_.ServicePlans | Where-Object { $_.ServicePlanId -eq $servicePlanId -and $_.ProvisioningStatus -eq "Success" }
-} | ForEach-Object { $true }
+}# | ForEach-Object { $true }
 
 $foreground = if ($servicePlanEnabled) { "Green" } else { "DarkMagenta" }
 Write-Host "The service plan Azure AD Premium P2 is $(if ($servicePlanEnabled) { "enabled" } else { "not enabled" }) for the tenant." -ForegroundColor $foreground
@@ -320,6 +309,7 @@ $allPrincipals += $allUsers | ForEach-Object {
         id = $_.id
         type = 'User'
         identifier = $_.userPrincipalName 
+        principal  = $_
     } 
 }
 $allPrincipals += $allGroups | ForEach-Object { 
@@ -327,6 +317,7 @@ $allPrincipals += $allGroups | ForEach-Object {
         id = $_.id
         type = 'Group'
         identifier = $_.displayName 
+        principal  = $_
     } 
 }
 $allPrincipals += $allServicePrincipals | ForEach-Object { 
@@ -334,6 +325,7 @@ $allPrincipals += $allServicePrincipals | ForEach-Object {
         id = $_.id
         type = 'ServicePrincipal'
         identifier = $_.appId 
+        principal  = $_
     } 
 }
 
@@ -453,61 +445,89 @@ foreach ($subscription in $subscriptions) {
 # Collect Entra ID roles
 Write-Verbose "Collecting Entra ID role assignments..."
 $combinedEntraRoles = @()
+
+# First, collect all regular directory roles
 $roles = Get-GraphData -uri 'https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?$expand=principal' -authHeader $authHeader
 $roles1 = Get-GraphData -uri 'https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?$expand=roleDefinition' -authHeader $authHeader
-if ($servicePlanEnabled) {
-    $eligibleRoles = Get-GraphData -uri 'https://graph.microsoft.com/beta/roleManagement/directory/roleEligibilitySchedules?$expand=principal,roleDefinition' -authHeader $authHeader
-} else {
-    Write-Verbose "Skipping eligible Entra ID roles as Entra P2 service plan is not enabled."
+
+# Process regular directory roles
+foreach ($role in $roles) {
+    $roleDef = ($roles1 | Where-Object {$_.id -eq $role.id}).roleDefinition
+    
+    # Skip if this is an AU-scoped role - we'll handle those separately
+    if ($role.directoryScopeId -like "/administrativeUnits/*") { continue }
+    
+    $combinedRole = $role | Select-Object *, @{Name='roleDefinitionNew'; Expression={ $roleDef }}
+    $combinedRole | Add-Member -MemberType NoteProperty -Name "AssignmentType" -Value "Active"
+    $combinedEntraRoles += $combinedRole
 }
 
-Write-Verbose "Collecting Administrative Unit scoped role assignments..."
+# Process eligible roles if P2 is enabled
+if ($servicePlanEnabled) {
+    $eligibleRoles = Get-GraphData -uri 'https://graph.microsoft.com/beta/roleManagement/directory/roleEligibilitySchedules?$expand=principal,roleDefinition' -authHeader $authHeader
+    
+    foreach ($role in $eligibleRoles) {
+        # Skip if this is an AU-scoped role
+        if ($role.directoryScopeId -like "/administrativeUnits/*") { continue }
+        
+        $combinedRole = $role | Select-Object *, @{Name='roleDefinitionNew'; Expression={ $role.roleDefinition }}
+        $combinedRole | Add-Member -MemberType NoteProperty -Name "AssignmentType" -Value "Eligible"
+        $combinedEntraRoles += $combinedRole
+    }
+}
 
-# Get all Administrative Units
-Write-Verbose "Collecting Administrative Unit scoped role assignments..."
-$administrativeUnits = Get-GraphData -uri 'https://graph.microsoft.com/v1.0/directory/administrativeUnits?$select=id,displayName' -authHeader $authHeader
-Write-Verbose "Found $($administrativeUnits.Count) Administrative Units"
+# Process Administrative Unit roles
+Write-Verbose "Processing Administrative Unit scoped role assignments..."
 
 foreach ($au in $administrativeUnits) {
     Write-Verbose "Processing roles for AU: $($au.displayName)"
     
-    # Get active role assignments for this AU
-    $auRoles = Get-GraphData -uri "https://graph.microsoft.com/v1.0/directory/administrativeUnits/$($au.id)/scopedRoleMembers" -authHeader $authHeader
-    
+    # Get active role assignments for this AU using the updated endpoint
+    $auRoles = Get-GraphData -uri "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?`$expand=principal&`$filter=directoryScopeId eq '/administrativeUnits/$($au.id)'" -authHeader $authHeader
+
     if ($auRoles) {
         foreach ($role in $auRoles) {
-            # Get the actual role definition name
-            $roleDefName = Get-GraphData -uri "https://graph.microsoft.com/v1.0/directoryRoles?`$filter=id eq '$($role.roleDefinitionId)'" -authHeader $authHeader
-            
+            $uri = "https://graph.microsoft.com/v1.0/roleManagement/directory/roleDefinitions/" + $role.roleDefinitionId
+            $roleDefinitionDetails = Invoke-RestMethod -Method Get -uri $uri -Headers $authHeader -ErrorAction Stop
+            $roleDefinitionDisplayName = $roleDefinitionDetails.displayName
+
             $combinedRole = [PSCustomObject]@{
-                id = $role.id
-                principal = $role.roleMemberInfo
+                id                = $role.id
+                principal         = $role.principal
                 roleDefinitionNew = @{
-                    displayName = $roleDefName.displayName
-                    isBuiltIn = $true
+                    displayName = "AU $($au.displayName): $roleDefinitionDisplayName"
+                    isBuiltIn   = $true
                 }
-                AssignmentType = "Active"
-                scopedAU = $au.displayName
+                AssignmentType    = "Active"
+                directoryScopeId  = "/administrativeUnits/$($au.id)"
             }
             $combinedEntraRoles += $combinedRole
         }
+    } else {
+        Write-Warning "No active role assignments found for AU: $($au.displayName)"
     }
     
     # Get eligible role assignments if P2 is enabled
     if ($servicePlanEnabled) {
         try {
-            $auEligibleRoles = Get-GraphData -uri "https://graph.microsoft.com/beta/roleManagement/directory/roleEligibilitySchedules?`$expand=principal,roleDefinition&`$filter=directoryScopeId eq '$($au.id)'" -authHeader $authHeader
+            $auEligibleRoles = Get-GraphData -uri "https://graph.microsoft.com/beta/roleManagement/directory/roleEligibilitySchedules?`$expand=principal,roleDefinition&`$filter=directoryScopeId eq '/administrativeUnits/$($au.id)'" -authHeader $authHeader
             
             if ($auEligibleRoles) {
                 foreach ($role in $auEligibleRoles) {
-                    $combinedRole = $role | Select-Object *, @{Name='roleDefinitionNew'; Expression={ $role.roleDefinition }}
-                    $combinedRole | Add-Member -MemberType NoteProperty -Name "AssignmentType" -Value "Eligible"
-                    $combinedRole | Add-Member -MemberType NoteProperty -Name "scopedAU" -Value $au.displayName
+                    $combinedRole = [PSCustomObject]@{
+                        id                = $role.id
+                        principal         = $role.principal
+                        roleDefinitionNew = @{
+                            displayName = "AU $($au.displayName): $($role.roleDefinition.displayName)"
+                            isBuiltIn   = $true
+                        }
+                        AssignmentType    = "Eligible"
+                        directoryScopeId  = "/administrativeUnits/$($au.id)"
+                    }
                     $combinedEntraRoles += $combinedRole
                 }
             }
-        }
-        catch {
+        } catch {
             Write-Warning "Error processing eligible roles for AU $($au.displayName): $_"
         }
     }
@@ -548,27 +568,19 @@ $rbacRoles = $rbacRoles | Sort-Object -Property @{
     }
 }, AccountName, DisplayName, AssignmentType, Scope
 
+
 # Process Entra ID Roles
-$combinedEntraRoles = @()
-foreach ($role in $roles) {
-    $roleDef = ($roles1 | Where-Object {$_.id -eq $role.id}).roleDefinition
-    $combinedRole = $role | Select-Object *, @{Name='roleDefinitionNew'; Expression={ $roleDef }}
-    $combinedRole | Add-Member -MemberType NoteProperty -Name "AssignmentType" -Value "Active"
-    $combinedEntraRoles += $combinedRole
-}
-
-foreach ($role in $eligibleRoles) {
-    $combinedRole = $role | Select-Object *, @{Name='roleDefinitionNew'; Expression={ $role.roleDefinition }}
-    $combinedRole | Add-Member -MemberType NoteProperty -Name "AssignmentType" -Value "Eligible"
-    $combinedEntraRoles += $combinedRole
-}
-
 Write-Verbose "Processing Entra ID roles output..."
 $entraReport = @()
+
+# Modified grouping to preserve full objects
 $groupedRoles = $combinedEntraRoles | Group-Object -Property { $_.principal.id }
 
 foreach ($group in $groupedRoles) {
     $firstRole = $group.Group[0]
+    
+    # Skip if principal is null
+    if ($null -eq $firstRole.principal) { continue }
     
     $reportLine = [ordered]@{
         "Principal" = switch ($firstRole.principal.'@odata.type') {
@@ -580,8 +592,8 @@ foreach ($group in $groupedRoles) {
                 }
             }
             '#microsoft.graph.servicePrincipal' { $firstRole.principal.appId }
-            '#microsoft.graph.group' { $firstRole.principal.id }
-            Default { $null }
+            '#microsoft.graph.group' { $firstRole.principal.displayName }
+            Default { $firstRole.principal.userPrincipalName }
         }
         "PrincipalDisplayName" = switch ($firstRole.principal.'@odata.type') {
             '#microsoft.graph.user' { 
@@ -602,24 +614,21 @@ foreach ($group in $groupedRoles) {
             $firstRole.principal.'@odata.type'.Split(".")[-1]
         }
         "LastSignIn" = ""
-        "ActiveRoles" = ($group.Group | Where-Object { $_.AssignmentType -eq "Active" } | ForEach-Object {
-            $roleName = $_.roleDefinitionNew.displayName
-            if ($_.scopedAU) {
-                "$roleName (AU: $($_.scopedAU))"
-            } else {
-                $roleName
-            }
-        } | Sort-Object -Unique) -join ", "
-        "EligibleRoles" = ($group.Group | Where-Object { $_.AssignmentType -eq "Eligible" } | ForEach-Object {
-            $roleName = $_.roleDefinitionNew.displayName
-            if ($_.scopedAU) {
-                "$roleName (AU: $($_.scopedAU))"
-            } else {
-                $roleName
-            }
-        } | Sort-Object -Unique) -join ", "
-        "IsBuiltIn" = $firstRole.roleDefinitionNew.isBuiltIn
     }
+
+    # Process Active Roles
+    $reportLine["ActiveRoles"] = ($group.Group | 
+        Where-Object { $_.AssignmentType -eq "Active" } | 
+        ForEach-Object { $_.roleDefinitionNew.displayName } | 
+        Sort-Object) -join ", "
+
+    # Process Eligible Roles
+    $reportLine["EligibleRoles"] = ($group.Group | 
+        Where-Object { $_.AssignmentType -eq "Eligible" } | 
+        ForEach-Object { $_.roleDefinitionNew.displayName } | 
+        Sort-Object) -join ", "
+
+    $reportLine["IsBuiltIn"] = $firstRole.roleDefinitionNew.isBuiltIn
 
     # Add sign-in information if it's a user
     if ($reportLine.PrincipalType -in @("user", "External User")) {
