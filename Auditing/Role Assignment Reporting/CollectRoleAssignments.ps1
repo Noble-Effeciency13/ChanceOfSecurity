@@ -52,7 +52,7 @@ The prefix for the name of the final excel file. Default is "Entra And RBAC Admi
 .NOTES
 Author:     Sebastian Flæng Markdanner
 Website:    https://chanceofsecurity.com
-Version:    1.7
+Version:    1.8
 
 - Entra ID Service Principal with:
   - Azure RBAC Reader role at Subscription, Management Group OR Root level.
@@ -77,6 +77,10 @@ Version:    1.7
   - Microsoft.Graph.Reports
   - Microsoft.Graph.Identity.Governance
   - ImportExcel
+
+- Release Notes
+  - Version 1.7: Fixed issue when collecting Administrative Units and enhanced the format in the finalized report.
+  - Version 1.8: Fixed issue where Administrative Units scoped roles wasn't always collected and/or formatted properly.
 
 .OUTPUTS
 - Excel file: Combined report of Azure RBAC and Entra roles.
@@ -288,7 +292,7 @@ Write-Host "The service plan Azure AD Premium P2 is $(if ($servicePlanEnabled) {
 
 #Region Data Collection
 # Collect EntraID data
-Write-Verbose "Collecting all users, groups, and service principals from EntraID"
+Write-Verbose "Collecting all users, groups, service principals, and Administrative Units from EntraID"
 try {
     $allUsers = Get-GraphData -uri 'https://graph.microsoft.com/v1.0/users?$select=id,userPrincipalName,mail,displayName' -authHeader $authHeader
     Write-Verbose "Collected $($allUsers.Count) users"
@@ -296,7 +300,9 @@ try {
     Write-Verbose "Collected $($allGroups.Count) groups"
     $allServicePrincipals = Get-GraphData -uri 'https://graph.microsoft.com/v1.0/servicePrincipals?$select=id,appId,displayName' -authHeader $authHeader
     Write-Verbose "Collected $($allServicePrincipals.Count) service principals"
-    if ($allUsers.Count -eq 0 -and $allGroups.Count -eq 0 -and $allServicePrincipals.Count -eq 0) { throw "No data collected from EntraID" }
+    $administrativeUnits = Get-GraphData -uri 'https://graph.microsoft.com/v1.0/directory/administrativeUnits' -authHeader $authHeader
+    Write-Verbose "Collected $($administrativeUnits.Count) Administrative Units"
+    if ($allUsers.Count -eq 0 -and $allGroups.Count -eq 0 -and $allServicePrincipals.Count -eq 0 -and $administrativeUnits.Count -eq 0) { throw "No data collected from EntraID" }
 } catch {
     Write-Error "Error collecting data from EntraID: $_"
     return
