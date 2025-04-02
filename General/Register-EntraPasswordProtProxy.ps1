@@ -7,26 +7,23 @@
     and performs health checks before and after the registration. It handles both proxy and forest
     registration, with validation steps in between.
 
-.PARAMETER None
-    This script does not accept parameters. Configuration is handled through hard-coded values.
+.PARAMETER AccountUpn
+    The User Principal Name (UPN) of the account used for registration.
+    Must be in email format (e.g., admin@contoso.com).
+    The account must have Global Administrator privileges.
 
 .NOTES
     File Name      : Register-EntraPasswordProtProxy.ps1
     Author         : Sebastian Flæng Markdanner
     Website        : https://chanceofsecurity.com
     Prerequisite   : Microsoft Entra Password Protection Proxy installed
-    Version        : 1.0
+    Version        : 1.0.1
     Creation Date  : 2024-03-31
 
 .EXAMPLE
-    .\Register-EntraPasswordProtProxy.ps1
-    Registers the proxy server and validates the configuration.
+    .\Register-EntraPasswordProtProxy.ps1 -AccountUpn "admin@contoso.com"
+    Registers the proxy server using the specified admin account.
 
-.INPUTS
-    None. You cannot pipe objects to this script.
-
-.OUTPUTS
-    None. This script does not generate any output objects.
 #>
 
 # Parameters
