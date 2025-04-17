@@ -1,4 +1,4 @@
-# Entra
+# Chance Of Security
 
 My collection of content related to whatever my blog got me tackling, primarily focused on Microsoft Entra, Intune, Purview, Defender and Azure. In that order!
 
